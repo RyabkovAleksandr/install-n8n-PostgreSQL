@@ -1,21 +1,19 @@
 #!/bin/bash
 
-# Скрипт для развертывания n8n на Ubuntu VPS
-# Поддерживает Ubuntu 20.04, 22.04, 24.04 LTS
-# Автор: Viacheslav Lykov
+# Скрипт для развертывания n8n на Ubuntu 24.04 VPS c PostgreSQL, Traefik, UFW и Fail2Ban
+# Автор: Viacheslav Lykov (модифицировано)
 # Telegram: https://t.me/JumbleAI
 # Youtube: https://www.youtube.com/@ViacheslavLykov
 
 set -e
 
-# Цвета для вывода
+# Цвета
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Глобальные переменные
 PROJECT_DIR="n8n-compose"
 DOMAIN=""
 MAIN_DOMAIN=""
@@ -23,63 +21,66 @@ SUBDOMAIN=""
 SSL_EMAIL=""
 ORIGINAL_DIR=""
 
-# Функции для вывода сообщений
 print_header() {
     echo -e "${BLUE}================================${NC}"
     echo -e "${BLUE}$1${NC}"
     echo -e "${BLUE}================================${NC}"
 }
 
-print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
-}
+print_success() { echo -e "${GREEN}✓ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
+print_error()   { echo -e "${RED}✗ $1${NC}"; }
+print_info()    { echo -e "${BLUE}ℹ $1${NC}"; }
 
-print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
-}
-
-print_error() {
-    echo -e "${RED}✗ $1${NC}"
-}
-
-print_info() {
-    echo -e "${BLUE}ℹ $1${NC}"
-}
-
-# Проверка версии Ubuntu
+# Проверка версии Ubuntu (только 24.04)
 check_ubuntu_version() {
     print_header "Проверка версии Ubuntu"
-
     if [ -f /etc/os-release ]; then
         . /etc/os-release
-        case $VERSION_ID in
-            "20.04"|"22.04"|"24.04")
-                print_success "Обнаружена поддерживаемая версия Ubuntu $VERSION_ID LTS"
-                ;;
-            *)
-                print_error "Обнаружена неподдерживаемая версия Ubuntu: $VERSION_ID"
-                echo "Поддерживаемые версии: Ubuntu 20.04, 22.04, 24.04 LTS"
-                exit 1
-                ;;
-        esac
+        if [ "$VERSION_ID" = "24.04" ]; then
+            print_success "Обнаружена поддерживаемая версия Ubuntu $VERSION_ID LTS"
+        else
+            print_error "Поддерживается только Ubuntu 24.04 LTS. Обнаружено: $VERSION_ID"
+            exit 1
+        fi
     else
         print_error "Не удалось определить версию Ubuntu"
         exit 1
     fi
 }
 
-# Проверка и установка Docker
+# Установка и проверка Docker
+install_docker_engine() {
+    print_info "Обновление пакетов..."
+    apt update && apt upgrade -y
+    print_info "Установка необходимых пакетов..."
+    apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+    print_info "Добавление ключа Docker..."
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    print_info "Добавление репозитория Docker..."
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    print_info "Установка Docker Engine..."
+    apt update
+    apt install -y docker-ce docker-ce-cli containerd.io
+    print_info "Запуск Docker..."
+    systemctl start docker
+    systemctl enable docker
+    print_success "Docker успешно установлен"
+}
+
+install_docker_compose() {
+    print_info "Установка Docker Compose v2..."
+    apt install -y docker-compose-plugin
+    print_success "Docker Compose успешно установлен"
+}
+
 install_docker() {
     print_header "Проверка и установка Docker"
-
-    # Проверка наличия Docker
-    if command -v docker &> /dev/null; then
+    if command -v docker &>/dev/null; then
         DOCKER_VERSION=$(docker --version | cut -d' ' -f3 | cut -d',' -f1)
         print_success "Docker уже установлен: $DOCKER_VERSION"
-
-        # Проверка Docker Compose
-        if docker compose version &> /dev/null || docker-compose version &> /dev/null; then
-            if docker compose version &> /dev/null; then
+        if docker compose version &>/dev/null || docker-compose version &>/dev/null; then
+            if docker compose version &>/dev/null; then
                 COMPOSE_VERSION=$(docker compose version | cut -d' ' -f4)
                 print_success "Docker Compose v2 уже установлен: $COMPOSE_VERSION"
             else
@@ -94,92 +95,107 @@ install_docker() {
     else
         print_warning "Docker не найден, устанавливаем..."
         install_docker_engine
+        install_docker_compose
     fi
 }
 
-# Установка Docker Engine
-install_docker_engine() {
-    print_info "Обновление пакетов..."
-    apt update && apt upgrade -y
-
-    print_info "Установка необходимых пакетов..."
-    apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
-
-    print_info "Добавление ключа Docker..."
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-
-    print_info "Добавление репозитория Docker..."
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-    print_info "Установка Docker Engine..."
-    apt update
-    apt install -y docker-ce docker-ce-cli containerd.io
-
-    print_info "Запуск Docker..."
-    systemctl start docker
-    systemctl enable docker
-
-    print_success "Docker успешно установлен"
+# Настройка SSH порта на 2222
+configure_ssh_port() {
+    print_header "Настройка SSH порта (2222)"
+    if ! grep -qE "^Port 2222" /etc/ssh/sshd_config; then
+        sed -i 's/^#\?Port .*/Port 2222/' /etc/ssh/sshd_config
+        print_info "Порт SSH изменен на 2222"
+    else
+        print_info "Порт SSH уже установлен на 2222"
+    fi
+    systemctl reload sshd || systemctl restart sshd
+    print_success "SSHD перезапущен на порту 2222"
+    print_warning "Не закрывайте текущую сессию, пока не убедитесь, что вход по порту 2222 работает."
 }
 
-# Установка Docker Compose
-install_docker_compose() {
-    print_info "Установка Docker Compose v2..."
-
-    # Установка Docker Compose plugin (новый способ)
-    apt install -y docker-compose-plugin
-
-    print_success "Docker Compose успешно установлен"
+# Настройка UFW
+setup_firewall() {
+    print_header "Настройка UFW"
+    apt install -y ufw
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 2222/tcp
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw allow 5670/tcp
+    ufw --force enable
+    print_success "UFW настроен и включен (22 закрыт, открыт 2222/80/443/5670)"
 }
 
-# Проверка существующих контейнеров n8n
+# Настройка Fail2Ban (порты 2222, 5670)
+setup_fail2ban() {
+    print_header "Установка и настройка Fail2Ban"
+    apt install -y fail2ban
+    cat >/etc/fail2ban/jail.local <<'EOF'
+[DEFAULT]
+bantime  = 10m
+findtime = 10m
+maxretry = 5
+backend  = systemd
+
+[sshd]
+enabled = true
+port    = 2222
+logpath = %(sshd_log)s
+maxretry = 5
+
+[postgresql]
+enabled  = true
+port     = 5670
+filter   = postgresql
+logpath  = /var/log/postgresql/postgresql-*.log
+maxretry = 5
+EOF
+
+    systemctl enable fail2ban
+    systemctl restart fail2ban
+    print_success "Fail2Ban настроен (порты 2222 и 5670)"
+}
+
+# Проверка существующих контейнеров
 check_existing_containers() {
     print_header "Проверка существующих контейнеров n8n"
-
-    # Проверка запущенных контейнеров
     if docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}" | grep -q n8n; then
         print_warning "Обнаружены существующие контейнеры n8n:"
         docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}" | grep n8n
-
         read -p "Хотите остановить и удалить существующие контейнеры? (y/n): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Останавливаем существующие контейнеры..."
             docker stop $(docker ps -aq --filter "name=n8n") 2>/dev/null || true
             docker rm $(docker ps -aq --filter "name=n8n") 2>/dev/null || true
-            print_success "Существующие контейнеры остановлены и удалены"
+            print_success "Существующие контейнеры удалены"
         fi
     else
         print_success "Существующие контейнеры n8n не найдены"
     fi
 
-    # Проверка Docker volumes
     if docker volume ls | grep -q n8n; then
         print_warning "Обнаружены существующие volumes n8n:"
         docker volume ls | grep n8n
-
         read -p "Хотите сохранить существующие volumes? (y/n): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Удаляем существующие volumes..."
             docker volume rm $(docker volume ls -q | grep n8n) 2>/dev/null || true
-            print_success "Существующие volumes удалены"
+            print_success "Volumes удалены"
         fi
     else
-        print_success "Существующие volumes n8n не найдены"
+        print_success "Volumes n8n не найдены"
     fi
 
-    # Проверка существующих SSL сертификатов
     if [ -d "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/letsencrypt/acme.json" ]; then
-        print_warning "Обнаружены существующие SSL сертификаты в $PROJECT_DIR/letsencrypt/"
+        print_warning "Обнаружены SSL сертификаты в $PROJECT_DIR/letsencrypt/"
         read -p "Хотите сохранить существующие сертификаты? (y/n): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Удаляем существующие сертификаты..."
             rm -rf "$PROJECT_DIR/letsencrypt"
             print_success "Существующие сертификаты удалены"
         else
-            print_info "Существующие сертификаты будут сохранены"
+            print_info "Сертификаты будут сохранены"
         fi
     fi
 }
@@ -187,37 +203,26 @@ check_existing_containers() {
 # Настройка домена и SSL
 setup_domain_ssl() {
     print_header "Настройка домена и SSL"
-
-    # Запрос домена
     read -p "Введите ваш домен (например: n8n.example.com): " DOMAIN
     if [ -z "$DOMAIN" ]; then
         print_error "Домен не может быть пустым"
         exit 1
     fi
-
-    # Проверка формата домена
     if [[ ! $DOMAIN =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
         print_error "Неверный формат домена: $DOMAIN"
         exit 1
     fi
-
-    # Запрос email для SSL
     read -p "Введите email для Let's Encrypt сертификата: " SSL_EMAIL
     if [ -z "$SSL_EMAIL" ]; then
         print_error "Email не может быть пустым"
         exit 1
     fi
-
-    # Проверка формата email
     if [[ ! $SSL_EMAIL =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
         print_error "Неверный формат email: $SSL_EMAIL"
         exit 1
     fi
-
     print_success "Домен: $DOMAIN"
     print_success "Email: $SSL_EMAIL"
-
-    # Извлечение субдомена и основного домена
     if [[ $DOMAIN =~ ^([^.]+)\.(.*)$ ]]; then
         SUBDOMAIN="${BASH_REMATCH[1]}"
         MAIN_DOMAIN="${BASH_REMATCH[2]}"
@@ -225,7 +230,6 @@ setup_domain_ssl() {
         SUBDOMAIN="n8n"
         MAIN_DOMAIN="$DOMAIN"
     fi
-
     print_info "Субдомен: $SUBDOMAIN"
     print_info "Основной домен: $MAIN_DOMAIN"
 }
@@ -233,8 +237,6 @@ setup_domain_ssl() {
 # Создание конфигурационных файлов
 create_config_files() {
     print_header "Создание конфигурационных файлов"
-
-    # Создание директории для проекта
     if [ -d "$PROJECT_DIR" ]; then
         print_warning "Директория $PROJECT_DIR уже существует"
         read -p "Хотите перезаписать файлы? (y/n): " -n 1 -r
@@ -249,31 +251,29 @@ create_config_files() {
 
     cd "$PROJECT_DIR"
 
-    # Создание .env файла
-    print_info "Создание .env файла..."
-    cat > .env << EOF
-# Конфигурация n8n
+    # .env
+    cat > .env <<EOF
+# Домены
 DOMAIN_NAME=$MAIN_DOMAIN
 SUBDOMAIN=$SUBDOMAIN
 SSL_EMAIL=$SSL_EMAIL
 
-# Часовой пояс (можно изменить)
+# Часовой пояс
 GENERIC_TIMEZONE=Europe/Moscow
 
-# База данных PostgreSQL
+# PostgreSQL настройки
 DB_TYPE=postgresdb
 DB_POSTGRESDB_HOST=postgres
-DB_POSTGRESDB_PORT=5432
+DB_POSTGRESDB_PORT=5670
 DB_POSTGRESDB_DATABASE=n8n
 DB_POSTGRESDB_USER=n8n
-DB_POSTGRESDB_PASSWORD=secure_password_here
+DB_POSTGRESDB_PASSWORD=$(openssl rand -hex 16)
 EOF
+    print_success ".env создан"
 
-    # Создание docker-compose.yml
-    print_info "Создание docker-compose.yml..."
-    cat > docker-compose.yml << 'EOF'
+    # docker-compose.yml
+    cat > docker-compose.yml <<'EOF'
 name: n8n
-
 services:
   traefik:
     image: "traefik"
@@ -306,7 +306,7 @@ services:
     image: docker.n8n.io/n8nio/n8n:latest
     restart: always
     ports:
-      - "127.0.0.1:5670:5670"
+      - "127.0.0.1:5678:5678"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.n8n.rule=Host(`${SUBDOMAIN}.${DOMAIN_NAME}`)"
@@ -325,14 +325,14 @@ services:
     environment:
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
-      - N8N_PORT=5670
+      - N8N_PORT=5678
       - N8N_PROTOCOL=https
       - N8N_RUNNERS_ENABLED=true
       - NODE_ENV=production
       - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
       - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
       - TZ=${GENERIC_TIMEZONE}
-      - DB_TYPE=${DB_TYPE:-postgresdb}
+      - DB_TYPE=${DB_TYPE}
       - DB_POSTGRESDB_HOST=${DB_POSTGRESDB_HOST}
       - DB_POSTGRESDB_PORT=${DB_POSTGRESDB_PORT}
       - DB_POSTGRESDB_DATABASE=${DB_POSTGRESDB_DATABASE}
@@ -341,14 +341,19 @@ services:
     volumes:
       - n8n_data:/home/node/.n8n
       - ./local-files:/files
+    depends_on:
+      - postgres
 
   postgres:
     image: postgres:15
     restart: always
+    command: -p 5670
     environment:
       - POSTGRES_DB=${DB_POSTGRESDB_DATABASE}
       - POSTGRES_USER=${DB_POSTGRESDB_USER}
       - POSTGRES_PASSWORD=${DB_POSTGRESDB_PASSWORD}
+    ports:
+      - "5670:5670"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     labels:
@@ -360,109 +365,70 @@ volumes:
   postgres_data:
 EOF
 
-    # Создание директории для локальных файлов
     mkdir -p local-files
 
-    # Проверяем, что файлы созданы корректно
-    if [ -f "docker-compose.yml" ] && [ -f ".env" ]; then
-        print_success "Конфигурационные файлы созданы в директории $PROJECT_DIR"
-
-        # Проверка синтаксиса docker-compose.yml
-        if docker compose config --quiet 2>/dev/null; then
-            print_success "Синтаксис docker-compose.yml корректен"
-        else
-            print_warning "Предупреждение: возможны проблемы с синтаксисом docker-compose.yml"
-        fi
+    if docker compose config --quiet 2>/dev/null; then
+        print_success "Синтаксис docker-compose.yml корректен"
     else
-        print_error "Ошибка: не удалось создать конфигурационные файлы"
-        exit 1
+        print_warning "Проверьте docker-compose.yml на ошибки"
     fi
 
-    # Возвращаемся в исходную директорию
-    cd "$ORIGINAL_DIR" || {
-        print_warning "Не удалось вернуться в исходную директорию: $ORIGINAL_DIR"
-    }
+    cd "$ORIGINAL_DIR" || print_warning "Не удалось вернуться в исходную директорию"
 }
 
-# Проверка конфигурационных файлов
 check_config_files() {
     print_info "Проверка конфигурационных файлов..."
-
-    # Проверка docker-compose.yml
     if [ ! -f "docker-compose.yml" ]; then
         print_error "Файл docker-compose.yml не найден"
         return 1
     fi
-
-    # Проверка синтаксиса docker-compose.yml
     if ! docker compose config --quiet 2>/dev/null; then
         print_error "Ошибка в синтаксисе docker-compose.yml"
-        print_info "Проверьте файл docker-compose.yml на ошибки"
         return 1
     else
         print_success "docker-compose.yml корректен"
     fi
-
-    # Проверка .env файла
     if [ ! -f ".env" ]; then
         print_error "Файл .env не найден"
         return 1
     fi
-
-    print_success "Все конфигурационные файлы найдены и корректны"
+    print_success "Все конфигурационные файлы корректны"
     return 0
 }
 
-# Запуск сервисов
 start_services() {
     print_header "Запуск сервисов n8n"
-
-    # Проверяем и создаем директорию если нужно
     if [ ! -d "$PROJECT_DIR" ]; then
         print_error "Директория $PROJECT_DIR не найдена"
         exit 1
     fi
-
     cd "$PROJECT_DIR"
-
-    # Проверяем конфигурационные файлы
     if ! check_config_files; then
         exit 1
     fi
-
     print_info "Запуск Docker Compose..."
     docker compose up -d
-
     print_info "Ожидание запуска сервисов..."
-    sleep 10
-
-    # Проверка статуса
+    sleep 12
     if docker compose ps | grep -q "Up"; then
         print_success "Сервисы успешно запущены!"
-
-        # Получение внешнего IP для информации
         EXTERNAL_IP=$(curl -s ifconfig.me 2>/dev/null || echo "не удалось определить")
-
         print_header "Информация о развертывании"
-        echo -e "${GREEN}✓ n8n доступен по адресу: https://${SUBDOMAIN}.${MAIN_DOMAIN}${NC}"
+        echo -e "${GREEN}✓ n8n: https://${SUBDOMAIN}.${MAIN_DOMAIN}${NC}"
         echo -e "${GREEN}✓ Traefik dashboard: https://traefik.${MAIN_DOMAIN}${NC}"
-        echo -e "${BLUE}ℹ Внешний IP сервера: $EXTERNAL_IP${NC}"
+        echo -e "${BLUE}ℹ Внешний IP: $EXTERNAL_IP${NC}"
         echo -e "${YELLOW}⚠ Убедитесь, что DNS записи указывают на этот IP${NC}"
-        echo -e "${YELLOW}⚠ Первый запуск может занять несколько минут${NC}"
     else
         print_error "Ошибка запуска сервисов"
-        print_info "Проверьте логи:"
         docker compose logs
         exit 1
     fi
+    cd "$ORIGINAL_DIR" || true
 }
 
-# Настройка автозапуска
 setup_autostart() {
     print_header "Настройка автозапуска"
-
-    # Создание systemd сервиса для автозапуска
-    cat > /etc/systemd/system/n8n.service << EOF
+    cat > /etc/systemd/system/n8n.service <<EOF
 [Unit]
 Description=n8n Workflow Automation
 Requires=docker.service
@@ -482,157 +448,63 @@ EOF
 
     systemctl daemon-reload
     systemctl enable n8n
-    # Запускаем сервис сразу для проверки
     if systemctl start n8n 2>/dev/null; then
         print_success "Сервис n8n запущен"
     else
-        print_warning "Не удалось автоматически запустить сервис n8n. Проверьте логи: journalctl -u n8n -e"
+        print_warning "Не удалось запустить сервис n8n. Проверьте: journalctl -u n8n -e"
     fi
-
     print_success "Автозапуск настроен"
-    print_info "Сервисы будут автоматически запускаться при перезагрузке сервера"
 }
 
-# Изменение порта SSH на 2222
-change_ssh_port() {
-    print_header "Изменение порта SSH на 2222"
-
-    if ! command -v sshd &> /dev/null; then
-        print_error "SSH сервер не найден"
-        exit 1
-    fi
-
-    # Изменяем порт в sshd_config
-    sed -i 's/^#Port 22/Port 2222/' /etc/ssh/sshd_config
-    sed -i 's/^Port 22/Port 2222/' /etc/ssh/sshd_config
-
-    # Перезапуск SSH
-    systemctl restart sshd
-    print_success "Порт SSH изменен на 2222"
-}
-
-# Установка и настройка UFW
-setup_ufw() {
-    print_header "Настройка UFW"
-
-    # Установка UFW если не установлен
-    if ! command -v ufw &> /dev/null; then
-        apt update
-        apt install -y ufw
-    fi
-
-    # Разрешаем порты
-    ufw allow 2222/tcp
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    ufw allow 5432/tcp  # PostgreSQL
-    ufw --force enable
-
-    print_success "UFW настроен и включен"
-}
-
-# Установка и настройка Fail2Ban
-setup_fail2ban() {
-    print_header "Установка и настройка Fail2Ban"
-
-    # Установка Fail2Ban если не установлен
-    if ! command -v fail2ban-client &> /dev/null; then
-        apt update
-        apt install -y fail2ban
-    fi
-
-    # Настройка jail для SSH на 2222
-    cat > /etc/fail2ban/jail.d/sshd.local << EOF
-[sshd]
-enabled = true
-port = 2222
-EOF
-
-    # Настройка jail для HTTP/HTTPS (nginx-http-auth как пример, адаптируйте если нужно)
-    cat > /etc/fail2ban/jail.d/http.local << EOF
-[nginx-http-auth]
-enabled = true
-port = 80,443
-EOF
-
-    # Для порта 5670 (n8n) - предполагаем мониторинг через custom filter, но для простоты добавим как http
-    cat > /etc/fail2ban/jail.d/n8n.local << EOF
-[n8n]
-enabled = true
-port = 5670
-logpath = /path/to/n8n/logs  # Укажите реальный путь к логам n8n, если нужно
-filter = nginx-http-auth  # Или создайте custom filter
-EOF
-
-    # Перезапуск Fail2Ban
-    systemctl restart fail2ban
-    print_success "Fail2Ban настроен для портов 2222, 80, 443, 5670"
-}
-
-# Основная функция
 main() {
-    # Проверка прав root
     if [ "$EUID" -ne 0 ]; then
-        print_error "Этот скрипт должен быть запущен с правами root (sudo)"
+        print_error "Запустите скрипт с правами root (sudo)"
         exit 1
     fi
 
-    print_header "Установка n8n на Ubuntu VPS"
-    print_info "Скрипт поддерживает Ubuntu 20.04, 22.04, 24.04 LTS"
-    echo
-
-    # Сохраняем исходную директорию
+    print_header "Установка n8n на Ubuntu 24.04 (PostgreSQL, Traefik, UFW, Fail2Ban)"
     ORIGINAL_DIR=$(pwd)
 
-    # Выполнение шагов
     check_ubuntu_version
+    configure_ssh_port
+    setup_firewall
+    setup_fail2ban
     install_docker
     check_existing_containers
     setup_domain_ssl
     create_config_files
-    change_ssh_port
-    setup_ufw
-    setup_fail2ban
     start_services
     setup_autostart
 
     print_header "Установка завершена!"
     print_success "n8n успешно развернут на вашем сервере"
     print_info "Не забудьте настроить DNS записи для домена"
-    print_info "Используйте 'docker compose logs -f' в директории $PROJECT_DIR для просмотра логов"
+    print_info "Логи: 'docker compose logs -f' в директории $PROJECT_DIR"
 }
 
-# Обработка аргументов командной строки
 case "${1:-}" in
     --help|-h)
-        echo "Скрипт для развертывания n8n на Ubuntu VPS"
-        echo ""
-        echo "Использование: $0 [опции]"
-        echo ""
+        echo "Скрипт для развертывания n8n на Ubuntu 24.04 LTS"
         echo "Опции:"
-        echo "  --help, -h          Показать эту справку"
-        echo "  --version, -v       Показать версию скрипта"
-        echo "  --update            Обновить n8n до последней версии"
-        echo "  --stop              Остановить все сервисы n8n"
-        echo "  --restart           Перезапустить сервисы n8n"
-        echo "  --check             Проверить конфигурационные файлы"
-        echo ""
+        echo "  --help, -h      Показать помощь"
+        echo "  --version, -v   Показать версию"
+        echo "  --update        Обновить n8n"
+        echo "  --stop          Остановить n8n"
+        echo "  --restart       Перезапустить n8n"
+        echo "  --check         Проверить конфигурацию"
         exit 0
         ;;
     --version|-v)
-        echo "n8n Installation Script v1.0.0"
-        echo "Поддерживает Ubuntu 20.04, 22.04, 24.04 LTS"
+        echo "n8n Installation Script v1.1.0 (Ubuntu 24.04 only, PostgreSQL)"
         exit 0
         ;;
     --update)
         print_header "Обновление n8n"
-        # Сохраняем текущую директорию
         ORIGINAL_DIR=$(pwd)
         if [ -d "n8n-compose" ]; then
             cd n8n-compose
-            # Проверяем наличие docker-compose.yml
             if [ ! -f "docker-compose.yml" ]; then
-                print_error "Файл docker-compose.yml не найден в директории n8n-compose"
+                print_error "docker-compose.yml не найден в n8n-compose"
                 exit 1
             fi
             docker compose pull
@@ -642,19 +514,16 @@ case "${1:-}" in
             print_error "Директория n8n-compose не найдена"
             exit 1
         fi
-        # Возвращаемся в исходную директорию
         cd "$ORIGINAL_DIR" 2>/dev/null || true
         exit 0
         ;;
     --stop)
         print_header "Остановка n8n"
-        # Сохраняем текущую директорию
         ORIGINAL_DIR=$(pwd)
         if [ -d "n8n-compose" ]; then
             cd n8n-compose
-            # Проверяем наличие docker-compose.yml
             if [ ! -f "docker-compose.yml" ]; then
-                print_error "Файл docker-compose.yml не найден в директории n8n-compose"
+                print_error "docker-compose.yml не найден в n8n-compose"
                 exit 1
             fi
             docker compose down
@@ -663,19 +532,16 @@ case "${1:-}" in
             print_error "Директория n8n-compose не найдена"
             exit 1
         fi
-        # Возвращаемся в исходную директорию
         cd "$ORIGINAL_DIR" 2>/dev/null || true
         exit 0
         ;;
     --restart)
         print_header "Перезапуск n8n"
-        # Сохраняем текущую директорию
         ORIGINAL_DIR=$(pwd)
         if [ -d "n8n-compose" ]; then
             cd n8n-compose
-            # Проверяем наличие docker-compose.yml
             if [ ! -f "docker-compose.yml" ]; then
-                print_error "Файл docker-compose.yml не найден в директории n8n-compose"
+                print_error "docker-compose.yml не найден в n8n-compose"
                 exit 1
             fi
             docker compose restart
@@ -684,27 +550,24 @@ case "${1:-}" in
             print_error "Директория n8n-compose не найдена"
             exit 1
         fi
-        # Возвращаемся в исходную директорию
         cd "$ORIGINAL_DIR" 2>/dev/null || true
         exit 0
         ;;
     --check)
         print_header "Проверка конфигурации"
-        # Сохраняем текущую директорию
         ORIGINAL_DIR=$(pwd)
         if [ -d "n8n-compose" ]; then
             cd n8n-compose
             if check_config_files; then
                 print_success "Конфигурация корректна"
             else
-                print_error "Найдены ошибки в конфигурации"
+                print_error "Найдены ошибки"
                 exit 1
             fi
         else
             print_error "Директория n8n-compose не найдена"
             exit 1
         fi
-        # Возвращаемся в исходную директорию
         cd "$ORIGINAL_DIR" 2>/dev/null || true
         exit 0
         ;;
