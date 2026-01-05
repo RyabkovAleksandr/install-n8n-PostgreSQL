@@ -1,4 +1,3 @@
-```bash
 #!/bin/bash
 
 # Скрипт для развертывания n8n на Ubuntu 24.04 VPS c PostgreSQL, Traefik, UFW и Fail2Ban
@@ -584,4 +583,3 @@ case "${1:-}" in
         main
         ;;
 esac
-```
